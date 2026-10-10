@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# pi-4.8 — toggle the direct-OpenRouter pi-hunt stack (coordinator + subagents +
+#          defaultModel) between Claude Opus 4.8 and Opus 4.7.
+#          Max effort is unchanged either way: pi-hunt preserves :xhigh thinking
+#          for both pinned OpenRouter models.
+#
+#   pi-4.8 on      use Opus 4.8
+#   pi-4.8 off     use Opus 4.7
+#   pi-4.8         show current state (status)
+#
+# Effect applies to the NEXT `pi-hunt` launch and any new subagent spawns; a
+# running session keeps its model until you relaunch or /model-switch it.
+set -uo pipefail
+
+AGENTS="$HOME/.pi/agent/agents"
+PIHUNT="$HOME/.local/bin/pi-hunt"
+ADAPTER="$HOME/.pi/agent/pi-coordinator-adapter.md"
+SETTINGS="$HOME/.pi/agent/settings.json"
+
+cur() { grep -oE '(kimi-for-coding|k2p7)' "$PIHUNT" 2>/dev/null | head -1; }
+
+status() {
+  local c n48 n47 dm; c=$(cur)
+  n48=$(grep -lE 'model: kimi-coding/kimi-for-coding' "$AGENTS"/*.md 2>/dev/null | wc -l)
+  n47=$(grep -lE 'model: kimi-coding/k2p7' "$AGENTS"/*.md 2>/dev/null | wc -l)
+  dm=$(grep -oE '(kimi-for-coding|k2p7)' "$SETTINGS" 2>/dev/null | head -1)
+  echo "  coordinator : ${c:-?}"
+  echo "  subagents   : ${n48} on Kimi Coding / ${n47} on Kimi K2.7 Code  (of 25)"
+  echo "  defaultModel: ${dm:-?}"
+  case "$c" in
+    kimi-for-coding) echo "  STATE: ON  (Kimi Coding)";;
+    k2p7) echo "  STATE: OFF (Kimi K2.7 Code)";;
+    *) echo "  STATE: mixed/unknown";;
+  esac
+}
+
+apply() { # $1=from  $2=to   (bare, e.g. opus-4.7 -> opus-4.8)
+  local from="$1" to="$2" fv="${1##*-}" tv="${2##*-}"
+  # Live OpenRouter model ids in launcher, adapter, settings, and all agents.
+  sed -i "s|$from|$to|g" "$PIHUNT" "$ADAPTER" "$SETTINGS" "$AGENTS"/*.md 2>/dev/null
+}
+
+case "${1:-status}" in
+  on)  apply k2p7 kimi-for-coding; echo "-> Kimi Coding (pi-4.8 ON)";  status;;
+  off) apply kimi-for-coding k2p7; echo "-> Kimi K2.7 Code (pi-4.8 OFF)"; status;;
+  status|"") status;;
+  -h|--help|help) sed -n '2,12p' "$0" | sed 's/^#\s\?//';;
+  *) echo "usage: pi-4.8 {on|off|status}"; exit 1;;
+esac
+
+if [ "${1:-}" = on ] || [ "${1:-}" = off ]; then
+  echo "  (effect on next pi-hunt launch / new subagent spawns; max effort unchanged)"
+fi

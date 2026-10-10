@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# pi-tier — cost/perf model tiering for the pi-hunt subagents.
+#
+# Heavy-reasoning agents (exploit creativity, chaining, validation) stay on the
+# flagship model; mechanical agents (scope loading, recon mapping, account
+# setup, UI observation, payload lookup) run on a cheaper "fast" model that does
+# the job for less. This cuts cost/latency on the high-volume mechanical work
+# without dulling the agents that actually find and prove bugs.
+#
+#   pi-tier on        apply tiering (mechanical agents -> $FAST model)
+#   pi-tier off       reset ALL agents back to the flagship model
+#   pi-tier status    show current per-agent models
+#   pi-tier set-fast <model-id>     change the fast model (default anthropic/claude-sonnet-5)
+#
+# Flagship is whatever pi-4.8 currently selects (opus-4.8/4.7). Fast model must
+# exist in ~/.pi/agent/models.json. Effect applies to NEW subagent spawns.
+set -uo pipefail
+
+AGENTS="$HOME/.pi/agent/agents"
+MODELS_JSON="$HOME/.pi/agent/models.json"
+STATE="$HOME/.pi/agent/.tier-state"
+FAST_DEFAULT="kimi-for-coding"
+PROVIDER="kimi-coding"
+
+# Mechanical agents that run on the fast model when tiering is ON.
+FAST_AGENTS=(
+  h1-scope-loader
+  intigriti-scope-loader
+  recon
+  test-account-manager
+  visual-security
+  payload-researcher
+  wordlist-curator
+)
+
+ok(){ printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
+err(){ printf '  \033[1;31m✗ %s\033[0m\n' "$*"; }
+
+fast_model(){
+  local model
+  model=$([ -f "$STATE" ] && grep -m1 . "$STATE" 2>/dev/null || true)
+  case "$model" in
+    ""|claude-sonnet-4.6|anthropic/claude-sonnet-4.6) echo "$FAST_DEFAULT";;
+    *) echo "$model";;
+  esac
+}
+
+flagship(){
+  # the model the bulk of agents currently use (mode), excluding the fast ones
+  grep -hoE 'model:\s*kimi-coding/[a-z0-9.-]+' "$AGENTS"/*.md 2>/dev/null \
+    | sed 's|model:\s*kimi-coding/||' | sort | uniq -c | sort -rn | awk 'NR==1{print $2}'
+}
+
+have_model(){ grep -q "\"id\":\s*\"$1\"" "$MODELS_JSON" 2>/dev/null; }
+
+set_model(){ # $1=agent file, $2=model-id
+  sed -i -E "s|^model:\s*kimi-coding/.*$|model: $PROVIDER/$2|" "$1"
+}
+
+is_fast_agent(){ local a="$1"; for x in "${FAST_AGENTS[@]}"; do [ "$x" = "$a" ] && return 0; done; return 1; }
+
+status(){
+  local n=0 nf=0
+  printf '  %-26s %s\n' "AGENT" "MODEL"
+  for f in "$AGENTS"/*.md; do
+    local a m; a=$(basename "$f" .md); m=$(grep -m1 -oE 'kimi-coding/[a-z0-9.-]+' "$f" | sed 's|kimi-coding/||')
+    is_fast_agent "$a" && { printf '  %-26s %s  (mechanical)\n' "$a" "$m"; nf=$((nf+1)); } || printf '  %-26s %s\n' "$a" "$m"
+    n=$((n+1))
+  done
+  echo "  fast model = $(fast_model) | flagship = $(flagship) | $n agents ($nf mechanical)"
+}
+
+case "${1:-status}" in
+  on)
+    FM="$(fast_model)"; FL="$(flagship)"
+    have_model "$FM" || { err "fast model '$FM' not in models.json"; exit 1; }
+    for f in "$AGENTS"/*.md; do
+      a=$(basename "$f" .md)
+      if is_fast_agent "$a"; then set_model "$f" "$FM"; else set_model "$f" "$FL"; fi
+    done
+    ok "tiering ON: ${#FAST_AGENTS[@]} mechanical agents -> $FM, rest -> $FL"
+    status
+    ;;
+  off)
+    FL="$(flagship)"
+    for f in "$AGENTS"/*.md; do set_model "$f" "$FL"; done
+    ok "tiering OFF: all agents -> $FL"
+    ;;
+  set-fast)
+    [ -n "${2:-}" ] || { err "usage: pi-tier set-fast <model-id>"; exit 1; }
+    have_model "$2" || { err "model '$2' not in models.json"; exit 1; }
+    echo "$2" > "$STATE"; ok "fast model = $2 (run 'pi-tier on' to apply)"
+    ;;
+  status|"") status;;
+  -h|--help|help) sed -n '2,18p' "$0" | sed 's/^#\s\?//';;
+  *) err "usage: pi-tier {on|off|status|set-fast <model>}"; exit 1;;
+esac
